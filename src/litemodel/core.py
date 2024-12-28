@@ -2,8 +2,12 @@ import os
 import sqlite3
 from typing import Type, TypeAlias, Iterable, get_origin, Union, get_args
 from jinja2 import Template
+from contextlib import contextmanager
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "db.db")
+
+print(f"DATABASE_PATH={DATABASE_PATH}")
+
 
 SQLITE_PRAGMAS = (
     "PRAGMA journal_mode = WAL;",
@@ -61,6 +65,20 @@ DELETE_BY_TEMPLATE = """DELETE FROM {{table}} WHERE {{field}} = ?"""
 # for now this will do
 
 CONNECTION = None
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    # We must issue a "BEGIN" explicitly when running in auto-commit mode.
+    conn.execute("BEGIN IMMEDIATE TRANSACTION")
+    try:
+        # Yield control back to the caller.
+        yield
+    except:
+        conn.rollback()  # Roll back all changes if an exception occurs.
+        raise
+    else:
+        conn.commit()
 
 
 def get_conn() -> sqlite3.Connection:
