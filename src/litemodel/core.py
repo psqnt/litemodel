@@ -6,7 +6,9 @@ from contextlib import contextmanager
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "db.db")
 
-print(f"DATABASE_PATH={DATABASE_PATH}")
+DEBUG = os.environ.get("LITEMODEL_DEBUG", False)
+if DEBUG:
+    print(f"DATABASE_PATH={DATABASE_PATH}")
 
 
 SQLITE_PRAGMAS = (
@@ -60,64 +62,6 @@ FIND_BY_TEMPLATE = """SELECT * from {{table}} where {{field}} = ?"""
 DELETE_BY_TEMPLATE = """DELETE FROM {{table}} WHERE {{field}} = ?"""
 
 
-# Need to do something here so we just have one connection
-# well two connections -- one for reading and one for writing
-# for now this will do
-
-CONNECTION = None
-
-
-@contextmanager
-def transaction(conn: sqlite3.Connection):
-    # We must issue a "BEGIN" explicitly when running in auto-commit mode.
-    conn.execute("BEGIN IMMEDIATE TRANSACTION")
-    try:
-        # Yield control back to the caller.
-        yield
-    except:
-        conn.rollback()  # Roll back all changes if an exception occurs.
-        raise
-    else:
-        conn.commit()
-
-
-def get_conn() -> sqlite3.Connection:
-    global CONNECTION
-    if CONNECTION is None:
-        CONNECTION = sqlite3.connect(
-            DATABASE_PATH, timeout=5, detect_types=1, isolation_level=None
-        )
-        for pragma in SQLITE_PRAGMAS:
-            CONNECTION.execute(pragma, [])
-        CONNECTION.row_factory = sqlite3.Row
-    return CONNECTION
-
-
-def _sql(sql_statement: str, values: Iterable | None = None) -> sqlite3.Cursor:
-    if values is None:
-        values = []
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(sql_statement, values)
-    return cur
-
-
-def sql_run(sql_statement: str, values: Iterable | None = None):
-    cur = _sql(sql_statement, values)
-    conn = get_conn()
-    conn.commit()
-    return cur.lastrowid
-
-
-def sql_select(sql_statement: str, values: Iterable | None = None):
-    cur = _sql(sql_statement, values)
-    yield from cur.fetchall()
-
-
-def is_type_optional(type_: Type) -> bool:
-    return get_origin(type_) is Union and type(None) in get_args(type_)
-
-
 class Field:
     def __init__(self, name: str, _type: SQL_TYPE) -> None:
         self.name = name
@@ -148,6 +92,11 @@ class Field:
                 # an entire model
                 return int(value)
             return value.id
+        if DEBUG:
+            print(f"{self.type=}")
+            print(f"{value=}")
+        if self.type is bool and value is None:
+            return False
         return value
 
     def __set__(self, instance, value):
@@ -225,8 +174,15 @@ class Model:
     def find_by(cls, field_name: str, value: SQL_TYPE):
         template = Template(FIND_BY_TEMPLATE)
         sql_statement = template.render({"table": cls._name, "field": field_name})
-        result = sql_select(sql_statement, (value,))
-        return cls(**dict(next(result)))
+        results = sql_select(sql_statement, (value,))
+        return map_objects(cls, results, many=False)
+
+    @classmethod
+    def find_many(cls, field_name: str, value: SQL_TYPE):
+        template = Template(FIND_BY_TEMPLATE)
+        sql_statement = template.render({"table": cls._name, "field": field_name})
+        results = sql_select(sql_statement, (value,))
+        return map_objects(cls, results, many=True)
 
     @classmethod
     def find(cls, id: int):
@@ -242,8 +198,7 @@ class Model:
     def all(cls):
         sql_statement = f"SELECT * from {cls._name}"
         rows = sql_select(sql_statement)
-        for row in rows:
-            yield cls(**dict(row))
+        return map_objects(cls, rows, many=True)
 
     @property
     def fields(self) -> dict:
@@ -268,6 +223,9 @@ class Model:
         field_keys = self.fields.keys()
         sql_statement = template.render({"table": self.table, "fields": field_keys})
         values = self._get_field_values(field_keys)
+        if DEBUG:
+            print(f"{sql_statement=}")
+            print(f"{values=}")
         self.id = sql_run(sql_statement, values)
 
     def _update(self) -> None:
@@ -285,5 +243,93 @@ class Model:
         for key in field_keys:
             field: Field = self.fields[key]
             value = field.get_value(getattr(self, field.name))
+            if value is None:
+                if field.type is int:
+                    value = 0
+                if field.type is bool:
+                    value = False
             values.append(value)
         return values
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    # We must issue a "BEGIN" explicitly when running in auto-commit mode.
+    conn.execute("BEGIN IMMEDIATE TRANSACTION")
+    try:
+        # Yield control back to the caller.
+        yield
+    except:
+        conn.rollback()  # Roll back all changes if an exception occurs.
+        raise
+    else:
+        conn.commit()
+
+
+def get_conn() -> sqlite3.Connection:
+    CONNECTION = sqlite3.connect(
+        DATABASE_PATH, timeout=5, detect_types=1, isolation_level=None
+    )
+    CONNECTION.row_factory = sqlite3.Row
+    return CONNECTION
+
+
+def sql_run(sql_statement: str, values: Iterable | None = None):
+    with get_conn() as db:
+        db.row_factory = sqlite3.Row
+        cursor = await db.execute(sql_statement, values)
+        db.commit()
+    return cursor.lastrowid
+
+
+def sql_select(sql_statement: str, values: Iterable | None = None):
+    all_rows = []
+    with get_conn() as db:
+        db.row_factory = sqlite3.Row
+        with db.execute(sql_statement, values) as cursor:
+            for row in cursor:
+                all_rows.append(row)
+    return all_rows
+
+
+def has_foreign_value(field: Field, column: str) -> bool:
+    if column == "id":
+        return False
+    if issubclass(field.type_when_not_null, Model):
+        return True
+    return False
+
+
+async def map_object(cls, **row):
+    """Maps an object to the subclass of model, queries for foreign keys"""
+    # This can't be done in __init__ (Model) or __set__ (Field) because
+    # if we get a foreign key we need to reach out to db and get it
+    # This would be an async call and these methods do not support async
+    # So this initializes an instance of Model (subclasses) with foreign keys
+    instance = cls()  # __init__ Model with no kwargs
+    for column, value in row.items():
+        field: Field = cls.get_field(column)
+        if has_foreign_value(field, column):
+            # field.type: Model
+            value = await field.type.find(value)  # query foreign model
+        setattr(instance, column, value)
+    return instance
+
+
+async def map_objects(cls, rows, many: bool = False):
+    """Maps objects to the subclass of model, queries for foreign keys"""
+    if many:
+        objects = []
+        for row in rows:
+            obj = await map_object(cls, **dict(row))
+            objects.append(obj)
+        return objects
+    try:
+        row = next(iter(rows))
+    except StopIteration:
+        return None
+    return await map_object(cls, **dict(row))
+
+
+def is_type_optional(type_: Type) -> bool:
+    return get_origin(type_) is Union and type(None) in get_args(type_)

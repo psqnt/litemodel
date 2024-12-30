@@ -57,49 +57,6 @@ FIND_BY_TEMPLATE = """SELECT * from {{table}} where {{field}} = ?"""
 DELETE_BY_TEMPLATE = """DELETE FROM {{table}} WHERE {{field}} = ?"""
 
 
-@contextmanager
-def transaction(conn: aiosqlite.Connection):
-    # We must issue a "BEGIN" explicitly when running in auto-commit mode.
-    conn.execute("BEGIN IMMEDIATE TRANSACTION")
-    try:
-        # Yield control back to the caller.
-        yield
-    except:
-        conn.rollback()  # Roll back all changes if an exception occurs.
-        raise
-    else:
-        conn.commit()
-
-
-def get_conn() -> aiosqlite.Connection:
-    return aiosqlite.connect(
-        database=DATABASE_PATH,
-        timeout=5,
-        detect_types=1,
-        isolation_level=None,
-        # check_same_thread: bool = True,
-        # cached_statements: int = 128,
-    )
-
-
-async def sql_run(sql_statement: str, values: Iterable | None = None):
-    async with get_conn() as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(sql_statement, values)
-        await db.commit()
-    return cursor.lastrowid
-
-
-async def sql_select(sql_statement: str, values: Iterable | None = None):
-    all_rows = []
-    async with get_conn() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(sql_statement, values) as cursor:
-            async for row in cursor:
-                all_rows.append(row)
-    return all_rows
-
-
 class Field:
     def __init__(self, name: str, _type: SQL_TYPE) -> None:
         self.name = name
@@ -169,7 +126,9 @@ class Model:
     @classmethod
     def set_table_name(cls) -> None:
         name = cls.__name__
-        cls._name = ''.join(['_' + c.lower() if c.isupper() else c for c in name]).lstrip('_')
+        cls._name = "".join(
+            ["_" + c.lower() if c.isupper() else c for c in name]
+        ).lstrip("_")
 
     @classmethod
     def get_table_name(cls) -> str:
@@ -202,7 +161,9 @@ class Model:
         not_null = {}
         for x, y in cls._fields.items():
             not_null[x] = "" if is_type_optional(y.type) else " NOT NULL"
-        sql_statement = template.render({"table": cls._name, "fields": cls._fields, "not_null": not_null})
+        sql_statement = template.render(
+            {"table": cls._name, "fields": cls._fields, "not_null": not_null}
+        )
         await sql_run(sql_statement)
 
     @classmethod
@@ -216,6 +177,13 @@ class Model:
         sql_statement = template.render({"table": cls._name, "field": field_name})
         results = await sql_select(sql_statement, (value,))
         return await map_objects(cls, results, many=False)
+
+    @classmethod
+    async def find_many(cls, field_name: str, value: SQL_TYPE):
+        template = Template(FIND_BY_TEMPLATE)
+        sql_statement = template.render({"table": cls._name, "field": field_name})
+        results = await sql_select(sql_statement, (value,))
+        return await map_objects(cls, results, many=True)
 
     @classmethod
     async def find(cls, id: int):
@@ -281,6 +249,49 @@ class Model:
         return values
 
 
+@contextmanager
+def transaction(conn: aiosqlite.Connection):
+    # We must issue a "BEGIN" explicitly when running in auto-commit mode.
+    conn.execute("BEGIN IMMEDIATE TRANSACTION")
+    try:
+        # Yield control back to the caller.
+        yield
+    except:
+        conn.rollback()  # Roll back all changes if an exception occurs.
+        raise
+    else:
+        conn.commit()
+
+
+def get_conn() -> aiosqlite.Connection:
+    return aiosqlite.connect(
+        database=DATABASE_PATH,
+        timeout=5,
+        detect_types=1,
+        isolation_level=None,
+        # check_same_thread: bool = True,
+        # cached_statements: int = 128,
+    )
+
+
+async def sql_run(sql_statement: str, values: Iterable | None = None):
+    async with get_conn() as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(sql_statement, values)
+        await db.commit()
+    return cursor.lastrowid
+
+
+async def sql_select(sql_statement: str, values: Iterable | None = None):
+    all_rows = []
+    async with get_conn() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(sql_statement, values) as cursor:
+            async for row in cursor:
+                all_rows.append(row)
+    return all_rows
+
+
 def has_foreign_value(field: Field, column: str) -> bool:
     if column == "id":
         return False
@@ -303,6 +314,7 @@ async def map_object(cls, **row):
             value = await field.type.find(value)  # query foreign model
         setattr(instance, column, value)
     return instance
+
 
 async def map_objects(cls, rows, many: bool = False):
     """Maps objects to the subclass of model, queries for foreign keys"""
