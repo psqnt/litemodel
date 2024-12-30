@@ -270,26 +270,24 @@ def get_conn() -> sqlite3.Connection:
     CONNECTION = sqlite3.connect(
         DATABASE_PATH, timeout=5, detect_types=1, isolation_level=None
     )
-    CONNECTION.row_factory = sqlite3.Row
+    # CONNECTION.row_factory = sqlite3.Row
     return CONNECTION
 
 
 def sql_run(sql_statement: str, values: Iterable | None = None):
     with get_conn() as db:
         db.row_factory = sqlite3.Row
-        cursor = await db.execute(sql_statement, values)
+        cursor = db.execute(sql_statement, values)
         db.commit()
     return cursor.lastrowid
 
 
 def sql_select(sql_statement: str, values: Iterable | None = None):
-    all_rows = []
     with get_conn() as db:
         db.row_factory = sqlite3.Row
-        with db.execute(sql_statement, values) as cursor:
-            for row in cursor:
-                all_rows.append(row)
-    return all_rows
+        cur = db.cursor()
+        rows = cur.fetchall()
+    return rows
 
 
 def has_foreign_value(field: Field, column: str) -> bool:
@@ -300,7 +298,7 @@ def has_foreign_value(field: Field, column: str) -> bool:
     return False
 
 
-async def map_object(cls, **row):
+def map_object(cls, **row):
     """Maps an object to the subclass of model, queries for foreign keys"""
     # This can't be done in __init__ (Model) or __set__ (Field) because
     # if we get a foreign key we need to reach out to db and get it
@@ -311,24 +309,24 @@ async def map_object(cls, **row):
         field: Field = cls.get_field(column)
         if has_foreign_value(field, column):
             # field.type: Model
-            value = await field.type.find(value)  # query foreign model
+            value = field.type.find(value)  # query foreign model
         setattr(instance, column, value)
     return instance
 
 
-async def map_objects(cls, rows, many: bool = False):
+def map_objects(cls, rows, many: bool = False):
     """Maps objects to the subclass of model, queries for foreign keys"""
     if many:
         objects = []
         for row in rows:
-            obj = await map_object(cls, **dict(row))
+            obj = map_object(cls, **dict(row))
             objects.append(obj)
         return objects
     try:
         row = next(iter(rows))
     except StopIteration:
         return None
-    return await map_object(cls, **dict(row))
+    return map_object(cls, **dict(row))
 
 
 def is_type_optional(type_: Type) -> bool:
