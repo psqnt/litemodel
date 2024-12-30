@@ -147,6 +147,13 @@ class Model:
         }
 
     @classmethod
+    def get_field(cls, name) -> Field | None:
+        for name, field in cls._fields.items():
+            if field.name == name:
+                return field
+        return None
+
+    @classmethod
     def set_cls_attributes(cls) -> None:
         for name, field in cls._fields.items():
             setattr(cls, name, field)
@@ -283,10 +290,15 @@ def sql_run(sql_statement: str, values: Iterable | None = None):
 
 
 def sql_select(sql_statement: str, values: Iterable | None = None):
+    print(sql_statement)
+    print(values)
     with get_conn() as db:
+        print(db)
         db.row_factory = sqlite3.Row
         cur = db.cursor()
+        cur.execute(sql_statement, values or {})
         rows = cur.fetchall()
+        print(f"{rows}")
     return rows
 
 
