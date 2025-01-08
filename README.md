@@ -8,7 +8,7 @@ pip install litemodel
 ## Usage
 
 ### Sync
-```
+```python
 # import Model
 from litemodel.core import Model
 
@@ -33,8 +33,9 @@ note = Note.find_by("title", "Test")
 note.text = "Updating the note"
 note.save()
 ```
+
 ### Async
-```
+```python
 # import Model
 from litemodel.async_core import Model
 
@@ -59,4 +60,20 @@ note = await Note.find_by("title", "Test")
 note.text = "Updating the note"
 await note.save()
 ```
+
+## Configuration
+You can set some environment variables to control behavior
+
+*set where litemodel will look for your database*
+```
+export DATABASE_PATH=/path/to/my/db/sqlite.db
+```
+
+*set to debug mode*
+```
+export LITEMODEL_DEBUG=True
+```
+
+## Note
+This was written fairly quickly and is lacking some functionality that I hopefully can get to soon. However, its a very small project so should be easy to update if you want to fork. Also its easily extensible to make better queries when needed
 
