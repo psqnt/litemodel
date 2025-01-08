@@ -61,6 +61,12 @@ note.text = "Updating the note"
 await note.save()
 ```
 
+## Example Project
+I used this to build a CLI note app you can see here:
+https://github.com/psqnt/notes
+
+look in the `__main__.py` file for some queries / instance creation and look in `db.py` for how to handle database creation / connection
+
 ## Configuration
 You can set some environment variables to control behavior
 
