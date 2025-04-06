@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# pytest
+htmlcov/
+*.coverage
+
+# sqlite db
+*.db
+*.sqlite

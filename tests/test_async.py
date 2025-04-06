@@ -1,6 +1,6 @@
 import aiosqlite
 import pytest
-from litemodel.async_core import Model, init_db
+from litemodel.async_core import Model, Field, init_db
 from typing import Optional
 
 
@@ -147,3 +147,47 @@ async def test_find_by_no_args(db):
         ValueError, match="At least one field-value pair must be provided"
     ):
         await User.find_by()
+
+
+# --- Field Class Tests ---
+@pytest.mark.asyncio
+async def test_field_sqlite_type_simple(db):
+    """Test that Field maps Python types to SQLite types correctly."""
+    field = Field("name", str)
+    assert field.sqlite_type == "TEXT"
+
+
+@pytest.mark.asyncio
+async def test_field_sqlite_type_optional(db):
+    """Test that optional types still map correctly."""
+    field = Field("city", Optional[str])
+    assert field.sqlite_type == "TEXT"
+
+
+@pytest.mark.asyncio
+async def test_field_sqlite_type_foreign_key(db):
+    """Test that foreign key fields map to INTEGER."""
+    field = Field("address", Optional[Address])
+    assert field.sqlite_type == "INTEGER"
+
+
+@pytest.mark.asyncio
+async def test_field_get_value_simple(db):
+    """Test get_value for simple types."""
+    field = Field("age", int)
+    assert field.get_value(42) == 42
+
+
+@pytest.mark.asyncio
+async def test_field_get_value_foreign_key(db):
+    """Test get_value for foreign keys with Model instance."""
+    address = Address(street="123 Main St")
+    field = Field("address", Address)
+    assert field.get_value(address) == address.id  # None initially, but intent is clear
+
+
+@pytest.mark.asyncio
+async def test_field_get_value_string_id(db):
+    """Test get_value with string ID for foreign key."""
+    field = Field("address", Address)
+    assert field.get_value("5") == 5

@@ -3,7 +3,14 @@ import sqlite3
 from typing import Type, Iterable, get_origin, Union, get_args
 from jinja2 import Template
 from contextlib import contextmanager
-from .constants import SQL_TYPES, SQL_TYPE, SQLITE_PRAGMAS
+from .constants import SQL_TYPES, SQL_TYPE
+from .sql_templates import (
+    CREATE_TABLE_TEMPLATE,
+    DELETE_BY_TEMPLATE,
+    INSERT_TEMPLATE,
+    FIND_BY_TEMPLATE,
+    UPDATE_TEMPLATE,
+)
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "db.db")
 
