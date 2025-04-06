@@ -1,60 +1,25 @@
 import os
 import aiosqlite
-from typing import Type, TypeAlias, Iterable, get_origin, Union, get_args
+from typing import Type, Iterable, get_origin, Union, get_args
 from jinja2 import Template
 from contextlib import contextmanager
+from .constants import SQL_TYPES, SQL_TYPE
+from .sql_templates import (
+    CREATE_TABLE_TEMPLATE,
+    DELETE_BY_TEMPLATE,
+    INSERT_TEMPLATE,
+    FIND_BY_TEMPLATE,
+    UPDATE_TEMPLATE,
+)
+from .pool import DEFAULT_POOL_SIZE, ConnectionPool
+
+_pool = None
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "db.db")
 
-SQLITE_PRAGMAS = (
-    "PRAGMA journal_mode = WAL;",
-    "PRAGMA busy_timeout = 5000;",
-    "PRAGMA synchronous = NORMAL;",
-    "PRAGMA cache_size = 1000000000;",
-    "PRAGMA foreign_keys = true;",
-    "PRAGMA temp_store = memory;",
-)
-
-SQL_TYPE: TypeAlias = int | float | str | bytes | bool
-
-SQL_TYPES = {
-    int: "INTEGER",
-    float: "REAL",
-    str: "TEXT",
-    bytes: "BLOB",
-    bool: "INTEGER",
-    None: "NULL",
-}
-
-CREATE_TABLE_TEMPLATE = """CREATE TABLE {{table}} (
-        id INTEGER PRIMARY KEY,
-        {%- for name, type in fields.items() %}
-        {{name}} {{type.sqlite_type}}{{not_null.get(name,'')}}{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-    )"""
-
-INSERT_TEMPLATE = """INSERT INTO {{table}} 
-        (
-        {%- for col_name in fields %}
-        {{col_name}}{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-        )
-    VALUES
-        ({%- for col_name in fields %}?{% if not loop.last -%},{%- endif -%}{% endfor %})
-"""
-
-UPDATE_TEMPLATE = """UPDATE {{table}}
-    SET 
-        {% for field in fields %}
-        {{field}} = ?{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-    WHERE
-        {{where}} = ?
-"""
-
-FIND_BY_TEMPLATE = """SELECT * from {{table}} where {{field}} = ?"""
-
-DELETE_BY_TEMPLATE = """DELETE FROM {{table}} WHERE {{field}} = ?"""
+DEBUG = os.environ.get("DEBUG", False)
+if DEBUG:
+    print(f"DATABASE_PATH={DATABASE_PATH}")
 
 
 class Field:
@@ -64,11 +29,12 @@ class Field:
 
     @property
     def sqlite_type(self) -> str:
+        print(f"{self.type=}")
         if is_type_optional(self.type):
             for type_ in SQL_TYPES:
                 if type_ == self.type_when_not_null:
                     return SQL_TYPES[type_]
-        if issubclass(self.type, Model):
+        if issubclass(self.type_when_not_null, Model):
             return SQL_TYPES[int]
         return SQL_TYPES[self.type]
 
@@ -80,18 +46,30 @@ class Field:
             if arg is not type(None):
                 return arg
 
-    def get_value(self, value: str) -> SQL_TYPE:
+    def get_value(self, value: any) -> SQL_TYPE:
+        print(f"{value=}")
+        print(f"{type(value)=}")
+        if value is None and is_type_optional(self.type):
+            return None
         if issubclass(self.type_when_not_null, Model):
-            if value.isdigit():
-                # handles case where inserting the foreign key by int instead of
-                # an entire model
+            if isinstance(value, str) and value.isdigit():
+                # Handle case where value is a string ID (e.g., "1")
                 return int(value)
-            return value.id
+            elif isinstance(value, Model):
+                # Handle case where value is a Model instance (e.g., Address)
+                return value.id
+            else:
+                raise ValueError(
+                    f"Expected a string ID or {self.type_when_not_null.__name__} instance, got {type(value)}"
+                )
+        if DEBUG:
+            print(f"{self.type=}")
+            print(f"{value=}")
+        if self.type is bool and value is None:
+            return False
         return value
 
     def __set__(self, instance, value):
-        if issubclass(self.type_when_not_null, Model) and isinstance(value, int):
-            value = self.type.find(value)
         instance._values[self.name] = value
 
     def __get__(self, instance, cls):
@@ -142,10 +120,7 @@ class Model:
 
     @classmethod
     def get_field(cls, name) -> Field | None:
-        for name, field in cls._fields.items():
-            if field.name == name:
-                return field
-        return None
+        return cls._fields.get(name)
 
     @classmethod
     def set_cls_attributes(cls) -> None:
@@ -172,22 +147,31 @@ class Model:
         await sql_run(sql_statement)
 
     @classmethod
-    async def find_by(cls, field_name: str, value: SQL_TYPE):
+    async def find_by(cls, **kwargs):
+        """Find the first record matching all provided field-value pairs."""
+        if not kwargs:
+            raise ValueError("At least one field-value pair must be provided")
+        field_names, values = zip(*kwargs.items()) if kwargs else ([], [])
         template = Template(FIND_BY_TEMPLATE)
-        sql_statement = template.render({"table": cls._name, "field": field_name})
-        results = await sql_select(sql_statement, (value,))
+        sql_statement = template.render({"table": cls._name, "fields": field_names})
+        results = await sql_select(sql_statement, values)
         return await map_objects(cls, results, many=False)
 
     @classmethod
-    async def find_many(cls, field_name: str, value: SQL_TYPE):
+    async def find_many(cls, **kwargs):
+        """Find all records matching all provided field-value pairs."""
+        if not kwargs:
+            raise ValueError("At least one field-value pair must be provided")
+        field_names, values = zip(*kwargs.items()) if kwargs else ([], [])
         template = Template(FIND_BY_TEMPLATE)
-        sql_statement = template.render({"table": cls._name, "field": field_name})
-        results = await sql_select(sql_statement, (value,))
+        sql_statement = template.render({"table": cls._name, "fields": field_names})
+        results = await sql_select(sql_statement, values)
         return await map_objects(cls, results, many=True)
 
     @classmethod
     async def find(cls, id: int):
-        return await cls.find_by("id", id)
+        """Find a record by its ID."""
+        return await cls.find_by(id=id)
 
     @classmethod
     async def delete_by(cls, field_name: str, value: SQL_TYPE):
@@ -274,30 +258,79 @@ def get_conn() -> aiosqlite.Connection:
     )
 
 
-async def sql_run(sql_statement: str, values: Iterable | None = None):
-    async with get_conn() as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(sql_statement, values)
-        await db.commit()
-    return cursor.lastrowid
+async def init_db(
+    pool_size: int = DEFAULT_POOL_SIZE,
+    database_path: str = DATABASE_PATH,
+    use_pool: bool = True,
+):
+    global _pool, DATABASE_PATH
+    DATABASE_PATH = database_path
+    if use_pool:
+        _pool = ConnectionPool(pool_size, database_path)
+        await _pool.initialize()
 
 
-async def sql_select(sql_statement: str, values: Iterable | None = None):
-    all_rows = []
-    async with get_conn() as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(sql_statement, values) as cursor:
+async def sql_run(
+    sql_statement: str,
+    values: Iterable | None = None,
+    conn: aiosqlite.Connection | None = None,
+):
+    if conn is None and _pool is not None:
+        conn = await _pool.get()
+        try:
+            cursor = await conn.execute(sql_statement, values)
+            await conn.commit()
+            lastrowid = cursor.lastrowid
+        finally:
+            await _pool.release(conn)
+        return lastrowid
+    elif conn is not None:
+        cursor = await conn.execute(sql_statement, values)
+        await conn.commit()
+        return cursor.lastrowid
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(sql_statement, values)
+            await db.commit()
+            return cursor.lastrowid
+
+
+async def sql_select(
+    sql_statement: str,
+    values: Iterable | None = None,
+    conn: aiosqlite.Connection | None = None,
+):
+    if conn is None and _pool is not None:
+        conn = await _pool.get()
+        try:
+            all_rows = []
+            async with conn.execute(sql_statement, values) as cursor:
+                async for row in cursor:
+                    all_rows.append(row)
+            return all_rows
+        finally:
+            await _pool.release(conn)
+    elif conn is not None:
+        all_rows = []
+        async with conn.execute(sql_statement, values) as cursor:
             async for row in cursor:
                 all_rows.append(row)
-    return all_rows
+        return all_rows
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql_statement, values) as cursor:
+                all_rows = []
+                async for row in cursor:
+                    all_rows.append(row)
+            return all_rows
 
 
 def has_foreign_value(field: Field, column: str) -> bool:
     if column == "id":
         return False
-    if issubclass(field.type_when_not_null, Model):
-        return True
-    return False
+    return issubclass(field.type_when_not_null, Model)
 
 
 async def map_object(cls, **row):
@@ -309,9 +342,9 @@ async def map_object(cls, **row):
     instance = cls()  # __init__ Model with no kwargs
     for column, value in row.items():
         field: Field = cls.get_field(column)
-        if has_foreign_value(field, column):
+        if field and has_foreign_value(field, column) and isinstance(value, int):
             # field.type: Model
-            value = await field.type.find(value)  # query foreign model
+            value = await field.type_when_not_null.find(value)  # query foreign model
         setattr(instance, column, value)
     return instance
 

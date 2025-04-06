@@ -15,3 +15,15 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "aiosqlite>=0.17"
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"  # Enables async testing
+pythonpath = ["src"]   # Ensures src/litemodel is importable
+testpaths = ["tests"]  # Where to find tests

@@ -1,65 +1,15 @@
 import os
 import sqlite3
-from typing import Type, TypeAlias, Iterable, get_origin, Union, get_args
+from typing import Type, Iterable, get_origin, Union, get_args
 from jinja2 import Template
 from contextlib import contextmanager
+from .constants import SQL_TYPES, SQL_TYPE, SQLITE_PRAGMAS
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "db.db")
 
 DEBUG = os.environ.get("LITEMODEL_DEBUG", False)
 if DEBUG:
     print(f"DATABASE_PATH={DATABASE_PATH}")
-
-
-SQLITE_PRAGMAS = (
-    "PRAGMA journal_mode = WAL;",
-    "PRAGMA busy_timeout = 5000;",
-    "PRAGMA synchronous = NORMAL;",
-    "PRAGMA cache_size = 1000000000;",
-    "PRAGMA foreign_keys = true;",
-    "PRAGMA temp_store = memory;",
-)
-
-SQL_TYPE: TypeAlias = int | float | str | bytes | bool
-
-SQL_TYPES = {
-    int: "INTEGER",
-    float: "REAL",
-    str: "TEXT",
-    bytes: "BLOB",
-    bool: "INTEGER",
-    None: "NULL",
-}
-
-CREATE_TABLE_TEMPLATE = """CREATE TABLE {{table}} (
-        id INTEGER PRIMARY KEY,
-        {%- for name, type in fields.items() %}
-        {{name}} {{type.sqlite_type}}{{not_null.get(name,'')}}{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-    )"""
-
-INSERT_TEMPLATE = """INSERT INTO {{table}} 
-        (
-        {%- for col_name in fields %}
-        {{col_name}}{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-        )
-    VALUES
-        ({%- for col_name in fields %}?{% if not loop.last -%},{%- endif -%}{% endfor %})
-"""
-
-UPDATE_TEMPLATE = """UPDATE {{table}}
-    SET 
-        {% for field in fields %}
-        {{field}} = ?{% if not loop.last -%},{%- endif -%}
-        {% endfor %}
-    WHERE
-        {{where}} = ?
-"""
-
-FIND_BY_TEMPLATE = """SELECT * from {{table}} where {{field}} = ?"""
-
-DELETE_BY_TEMPLATE = """DELETE FROM {{table}} WHERE {{field}} = ?"""
 
 
 class Field:
